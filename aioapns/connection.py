@@ -227,8 +227,8 @@ class APNsBaseClientProtocol(H2Protocol):
         self.free_channels.destroy(closed_connection)
 
     def on_response_received(self, headers):
-        notification_id = headers.get(b'apns-id').decode('utf8')
-        status = headers.get(b':status').decode('utf8')
+        notification_id = headers.get('apns-id')
+        status = headers.get(':status')
         if status == APNS_RESPONSE_CODE.SUCCESS:
             request = self.requests.pop(notification_id, None)
             if request:
@@ -292,7 +292,7 @@ class APNsBaseConnectionPool:
     def __init__(self,
                  topic: Optional[str] = None,
                  max_connections: int = 10,
-                 max_connection_attempts: Optional[int] = None,
+                 max_connection_attempts: Optional[int] = 1,
                  loop: Optional[asyncio.AbstractEventLoop] = None,
                  use_sandbox: bool = False):
 
@@ -353,39 +353,28 @@ class APNsBaseConnectionPool:
                             return connection
 
     async def send_notification(self, request):
-        failed_attempts = 0
-        while True:
-            logger.debug('Notification %s: waiting for connection',
-                         request.notification_id)
-            try:
-                connection = await self.acquire()
-            except ConnectionError:
-                failed_attempts += 1
-                logger.warning('Could not send notification %s: '
-                               'ConnectionError', request.notification_id)
-
-                if self.max_connection_attempts \
-                        and failed_attempts > self.max_connection_attempts:
-                    logger.error('Failed to connect after %d attempts.',
-                                 failed_attempts)
-                    raise
-
-                await asyncio.sleep(1)
-                continue
-            logger.debug('Notification %s: connection %s acquired',
-                         request.notification_id, connection)
-            try:
-                response = await connection.send_notification(request)
-                return response
-            except NoAvailableStreamIDError:
-                connection.close()
-            except ConnectionClosed:
-                logger.warning('Could not send notification %s: '
-                               'ConnectionClosed', request.notification_id)
-            except FlowControlError:
-                logger.debug('Got FlowControlError for notification %s',
-                             request.notification_id)
-                await asyncio.sleep(1)
+        response = NotificationResult(request.notification_id, APNS_RESPONSE_CODE.BAD_REQUEST)
+        response.description = "connection error"
+        logger.debug('Notification %s: waiting for connection', request.notification_id)
+        try:
+            connection = await self.acquire()
+        except ConnectionError:
+            logger.warning('Could not send notification %s: ConnectionError', request.notification_id)
+            return response
+        logger.debug('Notification %s: connection %s acquired', request.notification_id, connection)
+        response.description = "internal error"
+        try:
+            response = await connection.send_notification(request)
+            return response
+        except NoAvailableStreamIDError:
+            connection.close()
+        except ConnectionClosed:
+            logger.warning('Could not send notification %s: ConnectionClosed', request.notification_id)
+        except FlowControlError:
+            logger.debug('Got FlowControlError for notification %s', request.notification_id)
+        except:
+            logger.debug('internal error for %s', request.notification_id)
+        return response
 
 
 class APNsCertConnectionPool(APNsBaseConnectionPool):
